@@ -29,6 +29,7 @@ class Ligand:
     charge: int
     binding_motif: BindingMotif
 
+    name: Optional[str] = None
     plane: Optional[Plane] = None
 
     volume: float = field(default_factory=float) 
@@ -44,7 +45,8 @@ class Ligand:
         cls,
         xyz_path: str,
         charge: int,
-        binding_motif: BindingMotif
+        binding_motif: BindingMotif,
+        name: Optional[str] = None
     ) -> Ligand:
         
         atoms = read(xyz_path)
@@ -56,14 +58,16 @@ class Ligand:
                    mol=mol, 
                    smiles = Chem.MolToSmiles(no_H), 
                    charge=charge, 
-                   binding_motif=binding_motif)
+                   binding_motif=binding_motif,
+                   name=name)
     
     @classmethod
     def from_smiles(
         cls,
         smiles: str,
         binding_motif: BindingMotif,
-        random_seed: int
+        random_seed: int,
+        name: Optional[str] = None
     ) -> Ligand:
         
         mol = Chem.MolFromSmiles(smiles)
@@ -83,7 +87,8 @@ class Ligand:
             mol=mol, 
             smiles=smiles, 
             charge=Chem.GetFormalCharge(mol), 
-            binding_motif=binding_motif)
+            binding_motif=binding_motif,
+            name=name)
 
     def _get_volume(self) -> float:        
         self.volume = float(AllChem.ComputeMolVolume(self.mol))
