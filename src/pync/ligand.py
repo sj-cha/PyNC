@@ -6,14 +6,13 @@ from typing import Optional, Tuple, List
 import numpy as np
 from ase import Atoms
 from ase.io import read, write
-import random
 from scipy.spatial import cKDTree
 
 # RDKit
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdDetermineBonds
 
-from utils.rotation import rotation_about_axis, rotation_from_u_to_v
+from .utils.rotation import rotation_about_axis, rotation_from_u_to_v
 
 Plane = Tuple[int, int, int]
 
@@ -114,6 +113,13 @@ class Ligand:
             charge=Chem.GetFormalCharge(mol), 
             binding_motif=binding_motif,
             name=name)
+    
+    def clone(self) -> Ligand:
+        lig_cloned = object.__new__(Ligand)
+        lig_cloned.__dict__ = self.__dict__.copy()
+        lig_cloned.atoms = self.atoms.copy()
+
+        return lig_cloned
 
     def _get_volume(self) -> float:        
         self.volume = float(AllChem.ComputeMolVolume(self.mol))

@@ -1,6 +1,6 @@
 from __future__ import annotations
-
 from dataclasses import dataclass, field
+from copy import deepcopy
 from typing import List, Dict, Optional, Tuple
 
 import random
@@ -13,28 +13,28 @@ from ase.io import write
 
 from scipy.spatial import cKDTree 
 
-from core import Core, BindingSite
-from ligand import Ligand, LigandSpec
-from utils.rotation import rotation_about_axis, rotation_from_u_to_v
+from .core import Core, BindingSite
+from .ligand import Ligand, LigandSpec
+from .utils.rotation import rotation_about_axis, rotation_from_u_to_v
+from .utils.geometry import farthest_point_sampling, compute_bounding_spheres, build_neighbor_map
 
 @dataclass
 class NanoCrystal:
     core: Core
     ligand_specs: List[LigandSpec]
     random_seed: int
+    ligands: List[Ligand] = field(default_factory=list)
 
     # Rotation optimization parameters
     overlap_cutoff: float = 2.0   # Å
     coarse_step_deg: int = 18
     fine_step_deg: int = 2
     window_deg: int = 12
-
-    # NC attributes
-    ligands: List[Ligand] = field(default_factory=list)
-    displaced_indices: List[int] = field(default_factory=list)  # core atom indices removed
+    active_radius_factor: float = 1.5
 
     def __post_init__(self):
-        self.binding_sites = self.core.binding_sites
+        self.core = deepcopy(self.core)
+        self.binding_sites = deepcopy(self.core.binding_sites)
         self._rng = random.Random(self.random_seed)
         self.ligand_specs.sort(
             key=lambda spec: spec.ligand.volume,
@@ -47,9 +47,12 @@ class NanoCrystal:
     ) -> None:
         
         assert not self.ligands, "Ligands have already been placed."
-
+        
         self.ligands = []
-        self.displaced_indices = []
+        displaced_indices = []
+        for s in self.binding_sites:
+            s.passivated = False
+
         core_positions = self.core.atoms.get_positions()
 
         A_sites = [s for s in self.binding_sites if s.symbol == self.core.A]
@@ -81,33 +84,37 @@ class NanoCrystal:
                           f"but only {len(available)} available.")
                     n_target = len(available)
 
-            chosen_sites = self._select_sites_uniform(core_positions, available, n_target)
+            coords = np.array([core_positions[s.index] for s in available])
+            chosen_indices = farthest_point_sampling(coords, n_target, self._rng)
+            chosen_sites = [available[i] for i in chosen_indices]
 
             for site in chosen_sites:
-                lig_copy = self._clone_ligand(lig)
+                lig_cloned = lig.clone()
                 site.passivated = True
 
-                ligands.append(lig_copy)
+                ligands.append(lig_cloned)
                 sites.append(site)
-                self.displaced_indices.append(site.index)
+                displaced_indices.append(site.index)
 
             print(f"[Log] Placed total {len(chosen_sites)} {ligand_type} ligands.")
 
         n_lig = len(ligands)
         assert n_lig > 0, "No ligands to place."
 
+        # Binding site positions and planes
+        site_positions = np.array([core_positions[s.index] for s in sites])
+        site_planes = np.array([s.plane for s in sites], dtype=float)
+
         # Core atoms coordinates except displaced ones
-        n_core = core_positions.shape[0]
-
         surface_indices = np.concatenate(list(self.core.surface_atoms.values()))
-
-        disp_set = set(self.displaced_indices)
-
+        disp_set = set(displaced_indices)
         valid_surface_indices: List[int] = []
+
         for i in surface_indices:
-            if 0 <= i < n_core and i not in disp_set:
+            if i not in disp_set:
                 valid_surface_indices.append(i)
 
+        # Build KDTree for core surface atoms
         if valid_surface_indices:
             idx_arr = np.array(valid_surface_indices, dtype=int)
             surface_coords = core_positions[idx_arr]
@@ -118,73 +125,56 @@ class NanoCrystal:
 
         self._core_tree = core_tree
 
-        site_positions = np.array([core_positions[s.index] for s in sites])
-
-        site_normals = np.zeros((n_lig, 3), dtype=float)
-        for i, s in enumerate(sites):
-            n = np.asarray(s.plane, dtype=float)
-            n_hat = n / np.linalg.norm(n)
-            site_normals[i] = n_hat
-
         # Initialize rotation angles around surface normal and current coordinates
         thetas = np.array([2.0 * math.pi * self._rng.random() for _ in range(n_lig)], dtype=float)
         ligand_coords_list: List[np.ndarray] = []
         for i in range(n_lig):
             coords_i = self._place_one_ligand(
                 ligands[i],
-                site_normals[i],
+                site_planes[i],
                 site_positions[i],
                 thetas[i],
             )
             ligand_coords_list.append(coords_i)
-        
+
         # Rotaation optimization loop
         for iter in range(max_iters):
-            centers, radii = self._compute_bounding_spheres(ligand_coords_list)
-            neighbor_map = self._build_neighbor_map(centers, radii, self.overlap_cutoff)
+            centers, radii = compute_bounding_spheres(ligand_coords_list)
+            neighbor_map: Dict[int, List[int]] = build_neighbor_map(centers, radii, self.overlap_cutoff)
 
-            neighbor_coords_map = self._build_neighbor_coords_map(
+            global_min, conflict_ligs, dists = self._get_conflict_ligands(
                 ligand_coords_list,
-                neighbor_map,
-            )
+                neighbor_map
+                )
 
-            global_min, conflict_ligs, dists = self._get_conflict_ligands(ligand_coords_list, 
-                                                                          neighbor_coords_map,
-                                                                          self.overlap_cutoff
-                                                                          )
-            print(f"[Log] Iter {iter+1}  global_min = {global_min:.3f} Å")
+            print(f"[Log] Iter {iter}  global_min = {global_min:.3f} Å")
 
             if global_min >= self.overlap_cutoff:
-                print(f"[Log] Hard cutoff {self.overlap_cutoff} satisfied.")
+                print(f"[Log] Hard cutoff {self.overlap_cutoff} Å satisfied. Stopping optimization.")
                 break
 
-            if not conflict_ligs:
-                print("[Log] No conflict ligands but global_min < cutoff. stopping.")
-                break
-
-            active_set = self._build_active_cluster(conflict_ligs, sites, site_positions)
+            active_cluster = self._build_active_cluster(conflict_ligs, site_positions)
 
             improved = False
-            self._rng.shuffle(active_set)
+            self._rng.shuffle(active_cluster)
 
             for i in tqdm(
-                active_set,
+                active_cluster,
                 desc=f"Optimizing ligand (iter {iter+1})"
             ):
                 neighbor_idx = neighbor_map.get(i, [])
-                other_ligs = [ligand_coords_list[j] for j in neighbor_idx]
+                neighbors_coords = [ligand_coords_list[j] for j in neighbor_idx]
 
                 d_old = dists[i]
 
                 best_theta, best_coords = self._optimize_rotation(
                     i, 
                     ligands, 
-                    other_ligs,
-                    site_normals, 
+                    neighbors_coords,
+                    site_planes, 
                     site_positions
                 )
-                d_new = self._min_distance(best_coords, other_ligs)
-
+                d_new = self._min_distance(best_coords, neighbors_coords)
                 if d_new > d_old + 1e-3:
                     ligand_coords_list[i] = best_coords
                     thetas[i] = best_theta
@@ -195,159 +185,83 @@ class NanoCrystal:
                 break
 
         # Apply final coordinates to Ligand
-        self.ligands = []
         for lig, coords in zip(ligands, ligand_coords_list):
             lig.atoms.set_positions(coords)
             self.ligands.append(lig)
-    
-    def check_overlaps(self, cutoff: float = None):
-        if cutoff is None:
-            cutoff = self.overlap_cutoff
 
-        core_symbols = self.core.atoms.get_chemical_symbols()
-        core_positions = self.core.atoms.get_positions()
+        # Update core by removing displaced atoms           
+        core_atoms = self.core.atoms
+        core_symbols = core_atoms.get_chemical_symbols()
+        core_positions = core_atoms.get_positions()
+
         core_mask = np.ones(len(core_symbols), dtype=bool)
-        for idx in self.displaced_indices:
+        for idx in displaced_indices:
             if 0 <= idx < len(core_mask):
                 core_mask[idx] = False
-        core_coords = core_positions[core_mask]
 
-        entities = []
-        entity_labels = []
+        stripped_symbols = [s for s, keep in zip(core_symbols, core_mask) if keep]
+        stripped_positions = core_positions[core_mask]
 
-        if core_coords.size > 0:
-            entities.append(core_coords)
-            entity_labels.append("core")
-
-        for i, lig in enumerate(self.ligands):
-            entities.append(lig.atoms.get_positions())
-            entity_labels.append(f"ligand_{i}")
-
-        global_min = np.inf
-        global_pair = None
-
-        n = 0
-
-        for i in range(len(entities)):
-            for j in range(i + 1, len(entities)):
-                A = entities[i]
-                B = entities[j]
-                diff = A[:, None, :] - B[None, :, :]
-                d2 = np.sum(diff * diff, axis=-1)
-                min_idx = np.argmin(d2)
-                d_min = float(np.sqrt(d2.flat[min_idx]))
-
-                if d_min < global_min:
-                    global_min = d_min
-                    global_pair = (i, j)
-
-                if d_min < cutoff:
-                    print(
-                        f"[Log] {entity_labels[i]} vs {entity_labels[j]}: "
-                        f"min distance = {d_min:.3f} Å < {cutoff:.3f} Å"
-                    )
-                    n += 1
-
-        print(
-            f"[Log] global min distance = {global_min:.3f} Å "
-            f"between {entity_labels[global_pair[0]]} and {entity_labels[global_pair[1]]}"
-            f" (total overlaps: {n})"
+        self.core.atoms = Atoms(
+            symbols=stripped_symbols,
+            positions=stripped_positions,
+            pbc=core_atoms.pbc,
+            cell=core_atoms.get_cell(),
         )
 
-    def _compute_bounding_spheres(
+    def _min_distance(
         self,
-        coords_list: List[np.ndarray],
-    ) -> Tuple[np.ndarray, np.ndarray]:
-
-        n_lig = len(coords_list)
-        centers = np.zeros((n_lig, 3), dtype=float)
-        radii = np.zeros(n_lig, dtype=float)
-
-        for i, coords in enumerate(coords_list):
-            c = coords.mean(axis=0)
-            centers[i] = c
-            radii[i] = np.linalg.norm(coords - c, axis=1).max()
-
-        return centers, radii
-
-    def _build_neighbor_map(
-        self,
-        centers: np.ndarray,
-        radii: np.ndarray,
-        cutoff: float,
-    ) -> Dict[int, List[int]]:
-
-        n = len(centers)
-        neighbor_map: Dict[int, List[int]] = {i: [] for i in range(n)}
-
-        if n == 0:
-            return neighbor_map
-
-        max_r = float(radii.max()) if n > 0 else 0.0
-
-        tree = cKDTree(centers)
-
-        for i in range(n):
-            search_radius = radii[i] + max_r + cutoff
-
-            candidate_js = tree.query_ball_point(centers[i], r=search_radius)
-
-            for j in candidate_js:
-                if j == i:
-                    continue
-
-                center_dist = np.linalg.norm(centers[j] - centers[i])
-                if center_dist <= radii[i] + radii[j] + cutoff:
-                    neighbor_map[i].append(j)
-                    neighbor_map[j].append(i)
-
-        for i in range(n):
-            if neighbor_map[i]:
-                neighbor_map[i] = sorted(set(neighbor_map[i]))
-
-        return neighbor_map
-
-    def _build_neighbor_coords_map(
-        self,
-        ligand_coords_list: List[np.ndarray],
-        neighbor_map: Dict[int, List[int]],
-    ) -> Dict[int, Optional[np.ndarray]]:
+        coords_i: np.ndarray,
+        neighbors_coords: Optional[List[np.ndarray]],
+    ) -> float:
         
-        n_lig = len(ligand_coords_list)
-        neighbor_coords_map: Dict[int, Optional[np.ndarray]] = {}
+        # Distance to core
+        core_tree = self._core_tree
+        if core_tree is not None:
+            dists, _ = core_tree.query(coords_i)
+            d_core = float(np.min(dists))
+        else:
+            d_core = float("inf")
 
-        for i in range(n_lig):
-            idxs = neighbor_map.get(i, [])
-            if idxs:
-                neighbor_coords_map[i] = np.vstack(
-                    [ligand_coords_list[j] for j in idxs]
-                )
-            else:
-                neighbor_coords_map[i] = None
+        if d_core < self.overlap_cutoff:
+            return d_core
+        
+        if not neighbors_coords:
+            return d_core
+        
+        # Distance to neighboring ligands
+        neighbors = np.vstack(neighbors_coords)
+        diff = coords_i[None, :, :] - neighbors[:, None, :]
+        d2 = np.sum(diff * diff, axis=-1)
+        d_lig = float(np.sqrt(d2.min()))
 
-        return neighbor_coords_map
+        return min(d_core, d_lig)
 
     def _get_conflict_ligands(
         self,
         ligand_coords_list: List[np.ndarray],
-        neighbor_coords_map: Dict[int, Optional[np.ndarray]],
-        cutoff: float,
+        neighbor_map: Dict[int, List[int]],
     ) -> Tuple[float, List[int], np.ndarray]:
 
         n_lig = len(ligand_coords_list)
-        conflict_ligs: List[int] = []
+        conflict_ligs = []
         dists = np.empty(n_lig, dtype=float)
         global_min = float("inf")
 
         for i in range(n_lig):
             coords_i = ligand_coords_list[i]
-            other_flat = neighbor_coords_map[i]
+            idxs = neighbor_map.get(i, [])
 
-            d_i = self._min_distance(coords_i, other_ligands_coords=None, other_ligands_flat=other_flat)
+            neighbors_coords = [ligand_coords_list[j] for j in idxs] if idxs else None
+
+            d_i = self._min_distance(
+                coords_i,
+                neighbors_coords=neighbors_coords,
+            )
             dists[i] = d_i
             global_min = min(global_min, d_i)
 
-            if d_i < cutoff:
+            if d_i < self.overlap_cutoff:
                 conflict_ligs.append(i)
 
         return global_min, conflict_ligs, dists
@@ -355,11 +269,10 @@ class NanoCrystal:
     def _build_active_cluster(
         self,
         conflict_ligs: List[int],
-        sites: List[BindingSite],
         site_positions: np.ndarray,
     ) -> List[int]:
 
-        radius = self.core.a + 0.1
+        radius = self.active_radius_factor * self.core.a + 1e-2
 
         if not conflict_ligs:
             return []
@@ -389,7 +302,7 @@ class NanoCrystal:
     def _place_one_ligand(
         self,
         ligand: Ligand,
-        n_hat: np.ndarray,
+        plane: np.ndarray,
         site_pos: np.ndarray,
         theta: float,
     ) -> np.ndarray:
@@ -399,12 +312,12 @@ class NanoCrystal:
         # Rotate to surface normal
         R_align = rotation_from_u_to_v(
             np.array([0.0, 0.0, 1.0], dtype=float),
-            n_hat,
+            plane,
         )
         coords_aligned = coords_loc @ R_align.T
 
         # Rotate around surface normal 
-        R_rot = rotation_about_axis(n_hat, theta)
+        R_rot = rotation_about_axis(plane, theta)
         coords_rot = coords_aligned @ R_rot.T
 
         # Translate to binding site position
@@ -412,90 +325,56 @@ class NanoCrystal:
 
         return coords_final
 
-    def _min_distance_core(
-        self,
-        coords_i: np.ndarray,
-    ) -> float:
-        
-        core_tree = self._core_tree
-        dists, _ = core_tree.query(coords_i)
-        return float(np.min(dists))
-
-    def _min_distance(
-        self,
-        coords_i: np.ndarray,
-        other_ligands_coords: Optional[List[np.ndarray]] = None,
-        other_ligands_flat: Optional[np.ndarray] = None,
-    ) -> float:
-
-        d_core = self._min_distance_core(coords_i)
-
-        if d_core < self.overlap_cutoff:
-            return d_core
-
-        if other_ligands_flat is not None:
-            others = other_ligands_flat
-        elif other_ligands_coords:
-            others = np.vstack(other_ligands_coords)
-        else:
-            return d_core
-
-        diff = coords_i[None, :, :] - others[:, None, :]
-        d2 = np.sum(diff * diff, axis=-1)
-        d_lig = float(np.sqrt(d2.min()))
-
-        return min(d_core, d_lig)
-
     def _optimize_rotation(
         self,
         i: int,
         ligands: List[Ligand],
-        other_ligands_coords: List[np.ndarray],
-        site_normals: np.ndarray, 
+        neighbors_coords: List[np.ndarray],
+        site_planes: np.ndarray, 
         site_positions: np.ndarray,
     ) -> Tuple[float, np.ndarray]:
 
-        r_cut = self.overlap_cutoff
-
+        cutoff = self.overlap_cutoff
         ligand_i = ligands[i]
 
+        # Search parameters
         coarse_step_deg = self.coarse_step_deg
         fine_step_deg = self.fine_step_deg
         window_deg = self.window_deg
 
-        n_coarse = max(int(round(360.0 / coarse_step_deg)), 1)
-
+        # Initialization
         best_theta = None
         best_min_d = -float("inf")
         best_coords_i = None
-
         theta0 = 2.0 * math.pi * self._rng.random()
-
+        
         # Coarse search
+        n_coarse = max(int(round(360.0 / coarse_step_deg)), 1)
+
         for k in range(n_coarse):
             theta = theta0 + 2.0 * math.pi * (k / n_coarse)
             theta = theta % (2.0 * math.pi)
 
             coords_i = self._place_one_ligand(
                 ligands[i],
-                site_normals[i],
+                site_planes[i],
                 site_positions[i],
                 theta,
             )
-            min_d = self._min_distance(coords_i, other_ligands_coords)
+            min_d = self._min_distance(coords_i, neighbors_coords)
 
             better = False
             if best_theta is None:
                 better = True
             else:
                 # Case 1: both new and best are below cutoff
-                if best_min_d < r_cut and min_d > best_min_d:
+                if best_min_d < cutoff and min_d > best_min_d:
                     better = True
                 # Case 2: best is below cutoff, new candidate is above cutoff
-                elif best_min_d < r_cut and min_d >= r_cut:
+                elif best_min_d < cutoff and min_d >= cutoff:
                     better = True
                 # Case 3: both new and best are above cutoff, prefer larger min_d
-                elif best_min_d >= r_cut and min_d >= r_cut and min_d > best_min_d:
+                elif best_min_d >= cutoff and min_d >= cutoff and min_d > best_min_d:
                     better = True
 
             if better:
@@ -503,37 +382,24 @@ class NanoCrystal:
                 best_min_d = min_d
                 best_coords_i = coords_i
 
-        if best_theta is None:
-            best_theta = 0.0
-            best_coords_i = self._place_one_ligand(ligand_i, site_normals[i], site_positions[i], best_theta)
-            return best_theta, best_coords_i
-
         # Fine search 
         window_rad = math.radians(window_deg)
         fine_step_rad = math.radians(fine_step_deg)
 
-        if window_rad > 0 and fine_step_rad > 0:
-            n_fine = int(round(2.0 * window_rad / fine_step_rad)) + 1
-        else:
-            n_fine = 1
-
+        n_fine = int(round(2.0 * window_rad / fine_step_rad)) + 1
         for k in range(n_fine):
-            if n_fine > 1:
-                delta = -window_rad + k * (2.0 * window_rad / (n_fine - 1))
-            else:
-                delta = 0.0
-
+            delta = -window_rad + k * (2.0 * window_rad / (n_fine - 1))
             theta = (best_theta + delta) % (2.0 * math.pi)
 
-            coords_i = self._place_one_ligand(ligand_i, site_normals[i], site_positions[i], theta)
-            min_d = self._min_distance(coords_i, other_ligands_coords)
+            coords_i = self._place_one_ligand(ligand_i, site_planes[i], site_positions[i], theta)
+            min_d = self._min_distance(coords_i, neighbors_coords)
 
             better = False
-            if best_min_d < r_cut and min_d > best_min_d:
+            if best_min_d < cutoff and min_d > best_min_d:
                 better = True
-            elif best_min_d < r_cut and min_d >= r_cut:
+            elif best_min_d < cutoff and min_d >= cutoff:
                 better = True
-            elif best_min_d >= r_cut and min_d >= r_cut and min_d > best_min_d:
+            elif best_min_d >= cutoff and min_d >= cutoff and min_d > best_min_d:
                 better = True
 
             if better:
@@ -543,44 +409,6 @@ class NanoCrystal:
 
         return best_theta, best_coords_i
 
-    def _clone_ligand(self, ligand: Ligand) -> Ligand:
-        lig_cloned = object.__new__(Ligand)
-        lig_cloned.__dict__ = ligand.__dict__.copy()
-        lig_cloned.atoms = ligand.atoms.copy()
-
-        return lig_cloned
-
-    def _select_sites_uniform(
-        self,
-        core_positions: np.ndarray,
-        sites: List[BindingSite],
-        n_target: int,
-    ) -> List[BindingSite]:
-        
-        if n_target >= len(sites):
-            return list(sites)
-
-        coords = np.array([core_positions[s.index] for s in sites])
-
-        center = coords.mean(axis=0)
-        d2 = np.sum((coords - center) ** 2, axis=1)
-        first_idx = int(np.argmax(d2))
-
-        selected_indices = [first_idx]
-
-        d_min = np.linalg.norm(coords - coords[first_idx], axis=1)
-        d_min[first_idx] = 0.0
-
-        while len(selected_indices) < n_target:
-            next_idx = int(np.argmax(d_min))
-            selected_indices.append(next_idx)
-
-            new_d = np.linalg.norm(coords - coords[next_idx], axis=1)
-            d_min = np.minimum(d_min, new_d)
-            d_min[selected_indices] = 0.0  # already chosen
-
-        return [sites[i] for i in selected_indices]
-
     def to(self, fmt: str = "xyz", filename: str = None):
         at = self.atoms
         formula = at.get_chemical_formula()
@@ -588,30 +416,23 @@ class NanoCrystal:
 
     @property
     def atoms(self) -> Atoms:
-        core_symbols = self.core.atoms.get_chemical_symbols()
-        core_positions = self.core.atoms.get_positions()
+        core_atoms = self.core.atoms
+        core_symbols = list(core_atoms.get_chemical_symbols())
+        core_positions = core_atoms.get_positions()
 
-        core_mask = np.ones(len(core_symbols), dtype=bool)
-        for idx in self.displaced_indices:
-            if 0 <= idx < len(core_mask):
-                core_mask[idx] = False
-
-        base_symbols = [s for s, m in zip(core_symbols, core_mask) if m]
-        base_positions = core_positions[core_mask]
-
-        lig_symbols: List[str] = []
-        lig_positions_list: List[np.ndarray] = []
+        all_symbols = list(core_symbols)
+        all_positions = [core_positions]
 
         for lig in self.ligands:
-            lig_symbols.extend(lig.atoms.get_chemical_symbols())
-            lig_positions_list.append(lig.atoms.get_positions())
+            lig_atoms = lig.atoms
+            all_symbols.extend(lig_atoms.get_chemical_symbols())
+            all_positions.append(lig_atoms.get_positions())
 
-        if lig_positions_list:
-            lig_positions = np.vstack(lig_positions_list)
-            all_symbols = base_symbols + lig_symbols
-            all_positions = np.vstack([base_positions, lig_positions])
-        else:
-            all_symbols = base_symbols
-            all_positions = base_positions
+        all_positions = np.vstack(all_positions)
 
-        return Atoms(symbols=all_symbols, positions=all_positions, pbc=False)
+        return Atoms(
+            symbols=all_symbols,
+            positions=all_positions,
+            pbc=core_atoms.pbc,
+            cell=core_atoms.get_cell(),
+        )
