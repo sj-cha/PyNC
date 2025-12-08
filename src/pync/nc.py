@@ -37,8 +37,10 @@ class NanoCrystal:
         self.binding_sites = deepcopy(self.core.binding_sites)
         self._rng = random.Random(self.random_seed)
         self.ligand_specs.sort(
-            key=lambda spec: spec.ligand.volume,
-            reverse=True,
+            key=lambda spec: (
+                0 if spec.ligand.charge > 0 else 1, 
+                -spec.ligand.volume,                
+            )
         )
 
     def place_ligands(
