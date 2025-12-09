@@ -1,0 +1,23 @@
+[project]
+name = "pync"
+version = "0.1.0"
+description = "PyNC: an automatic construction of ligand-passivated nanocrystals"
+authors = [
+    { name="Seungjun Cha", email="scha@gatech.edu" }
+]
+requires-python = ">=3.10"
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "tqdm",
+    "ase",
+    "rdkit",  
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
