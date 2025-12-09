@@ -470,9 +470,7 @@ class NanoCrystal:
             "X": self.core.X,
             "a": self.core.a,
             "n_cells": self.core.n_cells,
-            "n_core_atoms": len(self.core.atoms),
-            "indices": None if self.core.indices is None else self.core.indices.tolist(),
-            "octahedra": None if self.core.octahedra is None else self.core.octahedra
+            "n_core_atoms": len(self.core.atoms)
         }
 
         ligand_types_meta = []
@@ -511,6 +509,8 @@ class NanoCrystal:
         for meta in ligand_types_meta:
             meta["n_instances"] = type_counts[meta["id"]]
 
+        core_indices_meta = {"octahedra": getattr(self.core, "octahedra", None)}
+
         ligands_meta = []
         for i, lig in enumerate(self.ligands):
             key = (
@@ -526,7 +526,6 @@ class NanoCrystal:
                     "ligand_id": i,
                     "spec_id": spec_id,
                     "plane": list(lig.plane),
-                    "indices": None if lig.indices is None else lig.indices.tolist(),
                 }
             )
 
@@ -539,6 +538,7 @@ class NanoCrystal:
             "n_total_atoms": n_total_atoms,
             "core": core_meta,
             "ligand_types": ligand_types_meta,
+            "core_indices": core_indices_meta,
             "ligands": ligands_meta,
         }
 
@@ -565,11 +565,6 @@ class NanoCrystal:
 
         core_meta = topo["core"]
         n_core_atoms = core_meta["n_core_atoms"]
-        core_indices_json = core_meta.get("indices", None)
-        if core_indices_json is None:
-            core_indices = np.arange(n_core_atoms, dtype=int)
-        else:
-            core_indices = np.array(core_indices_json, dtype=int)
 
         if n_core_atoms > len(atoms):
             raise ValueError(
@@ -578,6 +573,16 @@ class NanoCrystal:
 
         core_atoms = atoms[:n_core_atoms]
 
+        core_indices_meta = topo["core_indices"]
+        octa_raw = core_indices_meta.get("octahedra", None)
+        if octa_raw is not None:
+            octahedra = {
+                int(pb): {"Pb": v["Pb"], "Br": v["Br"]}
+                for pb, v in octa_raw.items()
+            }
+        else:
+            octahedra = None
+
         core = Core(
             A=core_meta["A"],
             B=core_meta["B"],
@@ -585,8 +590,7 @@ class NanoCrystal:
             atoms=core_atoms,
             a=core_meta["a"],
             n_cells=core_meta["n_cells"],
-            octahedra=core_meta["octahedra"],
-            indices=core_indices,
+            octahedra=octahedra,
             build_surface=False,
         )
 
@@ -604,11 +608,6 @@ class NanoCrystal:
             tmeta = type_id_to_meta[spec_id]
 
             n_atoms = tmeta["n_atoms"]
-            ligand_indices_json = inst_meta.get("indices", None)
-            if ligand_indices_json is None:
-                ligand_indices = np.arange(cursor, cursor + n_atoms, dtype=int)
-            else:
-                ligand_indices = np.array(ligand_indices_json, dtype=int)
 
             if cursor + n_atoms > len(atoms):
                 raise ValueError(
@@ -632,7 +631,6 @@ class NanoCrystal:
                 else None
             )
             lig.volume = tmeta["volume"]
-            lig.indices = ligand_indices
             lig.binding_atoms = []
             ligands.append(lig)
 
@@ -643,6 +641,7 @@ class NanoCrystal:
         )
         nc.ligands = ligands
         nc.ligand_coverage = {t["name"]: t["coverage"] for t in ligand_types_meta}
+        nc._build_index_map()
 
         return nc
 
