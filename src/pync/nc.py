@@ -632,6 +632,7 @@ class NanoCrystal:
             )
             lig.volume = tmeta["volume"]
             lig.binding_atoms = []
+            lig.neighbor_cutoff = 2.0
             ligands.append(lig)
 
         nc = cls(

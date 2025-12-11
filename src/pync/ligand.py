@@ -30,6 +30,7 @@ class Ligand:
 
     name: str
     plane: Optional[Plane] = None
+    neighbor_cutoff: float = 2.0
 
     volume: float = field(default_factory=float) 
     binding_atoms: List[int] = field(default_factory=list)
@@ -47,6 +48,7 @@ class Ligand:
         binding_motif: BindingMotif,
         name: str,
         charge: Optional[int] = None,     
+        **kwargs
     ) -> Ligand:
         
         atoms = read(xyz_path)
@@ -84,7 +86,8 @@ class Ligand:
                    smiles = Chem.MolToSmiles(no_H), 
                    charge=chosen_charge, 
                    binding_motif=binding_motif,
-                   name=name)
+                   name=name,
+                   **kwargs)
     
     @classmethod
     def from_smiles(
@@ -92,7 +95,8 @@ class Ligand:
         smiles: str,
         binding_motif: BindingMotif,
         random_seed: int,
-        name: str
+        name: str,
+        **kwargs
     ) -> Ligand:
         
         mol = Chem.MolFromSmiles(smiles)
@@ -113,7 +117,8 @@ class Ligand:
             smiles=smiles, 
             charge=Chem.GetFormalCharge(mol), 
             binding_motif=binding_motif,
-            name=name)
+            name=name,
+            **kwargs)
     
     def clone(self) -> Ligand:
         lig_cloned = object.__new__(Ligand)
@@ -125,7 +130,7 @@ class Ligand:
     def _get_volume(self) -> float:        
         self.volume = float(AllChem.ComputeMolVolume(self.mol))
     
-    def _get_binding_atoms_indices(self, r:float = 2.0) -> List[int]:
+    def _get_binding_atoms_indices(self) -> List[int]:
 
         symbols = self.atoms.get_chemical_symbols()
         coords  = self.atoms.get_positions()
@@ -166,7 +171,7 @@ class Ligand:
 
             # cKDTree neighbor counting within 2 Å
             tree = cKDTree(coords)
-            neighbors = tree.query_ball_point(elem_coords, r=r)
+            neighbors = tree.query_ball_point(elem_coords, r=self.neighbor_cutoff)
 
             # coordination number excluding self
             cn = np.fromiter((len(nbrs) - 1 for nbrs in neighbors), dtype=int)
