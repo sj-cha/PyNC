@@ -20,6 +20,7 @@ from .ligand import Ligand, LigandSpec, BindingMotif
 from .utils.rotation import rotation_about_axis, rotation_from_u_to_v
 from .utils.geometry import farthest_point_sampling, compute_bounding_spheres, build_neighbor_map
 
+
 @dataclass
 class NanoCrystal:
     core: Core
@@ -30,7 +31,7 @@ class NanoCrystal:
     octahedra: Optional[Dict[int, dict]] = None
 
     # Rotation optimization parameters
-    overlap_cutoff: float = 1.8   # Å
+    overlap_cutoff: float = 2.0   # Å
     coarse_step_deg: int = 18
     fine_step_deg: int = 2
     window_deg: int = 12
@@ -49,6 +50,7 @@ class NanoCrystal:
                 -spec.ligand.volume,                
             )
         )
+
 
     def place_ligands(
         self,
@@ -236,6 +238,23 @@ class NanoCrystal:
         self._build_octahedra()
         self._build_index_map()
 
+
+    def apply_tilt(
+        self,
+        glazer: str,
+        angles: Tuple[float, float, float],
+        *,
+        order: str = "xyz",
+    ):
+        from .tilt import apply_tilt 
+        apply_tilt(
+            structure=self,
+            glazer=glazer,
+            angles=angles,
+            order=order,
+        )
+
+
     def _min_distance(
         self,
         coords_i: np.ndarray,
@@ -263,6 +282,7 @@ class NanoCrystal:
         d_lig = float(np.sqrt(d2.min()))
 
         return min(d_core, d_lig)
+
 
     def _get_conflict_ligands(
         self,
@@ -292,6 +312,7 @@ class NanoCrystal:
                 conflict_ligs.append(i)
 
         return global_min, conflict_ligs, dists
+
 
     def _build_active_cluster(
         self,
@@ -326,6 +347,7 @@ class NanoCrystal:
 
         return sorted(list(active))
 
+
     def _place_one_ligand(
         self,
         ligand: Ligand,
@@ -357,6 +379,7 @@ class NanoCrystal:
         coords_final = coords_rot + anchor_pos
 
         return coords_final
+
 
     def _optimize_rotation(
         self,
@@ -444,6 +467,7 @@ class NanoCrystal:
                 best_coords_i = coords_i
 
         return best_theta, best_coords_i
+
 
     def _build_octahedra(self) -> None:
         
@@ -558,6 +582,7 @@ class NanoCrystal:
                         "smiles": lig.smiles,
                         "charge": lig.charge,
                         "binding_motif_atoms": list(lig.binding_motif.atoms),
+                        "binding_atoms_indices": list(getattr(lig, "binding_atoms", [])),
                         "coverage": self.ligand_coverage.get(lig.name),
                         "n_atoms": len(lig.atoms),
                         "volume": float(lig.volume),
@@ -570,7 +595,9 @@ class NanoCrystal:
         for meta in ligand_types_meta:
             meta["n_instances"] = type_counts[meta["id"]]
 
-        core_indices_meta = {"octahedra": self.octahedra}
+        core_indices_meta = {"octahedra": self.octahedra,
+                             "B_ijk": {str(k): list(v) for k, v in getattr(self.core, "B_ijk", {}).items()}
+                             }
 
         ligands_meta = []
         for i, lig in enumerate(self.ligands):
@@ -587,7 +614,6 @@ class NanoCrystal:
                     "ligand_id": i,
                     "spec_id": spec_id,
                     "plane": list(lig.plane),
-                    "anchor_pos": list(lig.anchor_pos),
                 }
             )
 
@@ -606,6 +632,7 @@ class NanoCrystal:
 
         with open(json_path, "w") as f:
             json.dump(topo, f, indent=2)
+
 
     @classmethod
     def from_xyz(cls, xyz_path: str, json_path: str) -> NanoCrystal:
@@ -636,6 +663,7 @@ class NanoCrystal:
         core_atoms = atoms[:n_core_atoms]
 
         core_indices_meta = topo["core_indices"]
+
         octa_raw = core_indices_meta.get("octahedra", None)
         X = str(core_meta["X"])
         if octa_raw is not None:
@@ -655,6 +683,9 @@ class NanoCrystal:
             n_cells=core_meta["n_cells"],
             build_surface=False,
         )
+
+        B_ijk_raw = core_indices_meta.get("B_ijk")
+        core.B_ijk = {int(k): (int(v[0]), int(v[1]), int(v[2])) for k, v in B_ijk_raw.items()}
 
         ligand_types_meta = topo["ligand_types"]
         type_id_to_meta: Dict[int, dict] = {
@@ -689,9 +720,12 @@ class NanoCrystal:
             lig.name = tmeta["name"]
             lig.plane = inst_meta["plane"]
             lig.volume = tmeta["volume"]
-            lig.anchor_pos = np.array(inst_meta["anchor_pos"], dtype=float)
-            lig._binding_atoms = []
             lig._neighbor_cutoff = 2.0
+            lig.binding_atoms = list(map(int, tmeta.get("binding_atoms_indices", [])))
+            
+            pos = np.asarray(lig_atoms.positions, dtype=float)
+            lig.anchor_pos = pos[np.asarray(lig.binding_atoms, dtype=int)].mean(axis=0)
+
             ligands.append(lig)
 
         nc = cls(
@@ -705,6 +739,7 @@ class NanoCrystal:
         nc._build_index_map()
 
         return nc
+
 
     @property
     def atoms(self) -> Atoms:

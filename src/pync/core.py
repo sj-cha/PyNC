@@ -10,6 +10,7 @@ from scipy.spatial import cKDTree
 
 import random
 
+
 Plane = Tuple[int, int, int]  
 
 @dataclass
@@ -18,6 +19,7 @@ class BindingSite:
     symbol: str             
     plane: Plane           
     passivated: bool = False     
+
 
 @dataclass
 class Core:
@@ -29,6 +31,7 @@ class Core:
     n_cells: int
     indices: Optional[np.ndarray] = None
     octahedra: Dict[int, Dict[str, List[int]]] = field(default_factory=dict)
+    B_ijk : Dict[int, Tuple[int, int, int]] = field(default_factory=dict)
     build_surface: bool = True
     surface_atoms: Dict[str, np.ndarray] = field(init=False)
     plane_atoms: Dict[Plane, Dict[str, List[int]]] = field(default_factory=dict)
@@ -38,7 +41,9 @@ class Core:
         self.surface_atoms = self._get_surface_atoms() if self.build_surface else {}
         self.binding_sites = self._build_binding_sites() if self.build_surface else []
         self._build_octahedra()
+        self._build_B_ijk()
         
+
     @classmethod
     # Currently only supports ABX3 perovskites with cubic structure
     def build_core(
@@ -142,7 +147,24 @@ class Core:
             assert n_A * 1 + n_B * 2 - n_X * 1 == 0, "Core is not charge neutral!"
 
         return core
+
+
+    def apply_tilt(
+        self,
+        glazer: str,
+        angles: Tuple[float, float, float],
+        *,
+        order: str = "xyz",
+    ):
+        from .tilt import apply_tilt 
+        apply_tilt(
+            structure=self,
+            glazer=glazer,
+            angles=angles,
+            order=order,
+        )
     
+
     def to(self, fmt: str = 'xyz', filename: str = None) -> None:
         """Export core structure to file."""
 
@@ -152,6 +174,7 @@ class Core:
         formula = self.atoms.get_chemical_formula()
 
         write(filename, self.atoms, format=fmt, comment=formula)
+
 
     def _get_surface_atoms(
             self, 
@@ -181,6 +204,7 @@ class Core:
             surface_indices[element] = np.where(surface_flags)[0]
 
         return surface_indices
+
 
     def _build_binding_sites(self) -> None:
         surface = self._get_surface_atoms()
@@ -233,6 +257,7 @@ class Core:
 
         return list(idx_to_site.values())
 
+
     def _build_octahedra(self) -> None:
         at = self.atoms
         syms = np.array(at.get_chemical_symbols())
@@ -260,3 +285,19 @@ class Core:
             }
 
         self.octahedra = octahedra
+
+
+    def _build_B_ijk(self) -> None:
+
+        b_keys = np.array(sorted(self.octahedra.keys()), dtype=int)
+
+        pos = np.asarray(self.atoms.positions, dtype=float)
+        b_pos = pos[b_keys]
+
+        origin = b_pos.min(axis=0, keepdims=True)
+        ijk_arr = np.rint((b_pos - origin) / float(self.a)).astype(int)
+
+        self.B_ijk = {
+            int(b): (int(ijk_arr[i, 0]), int(ijk_arr[i, 1]), int(ijk_arr[i, 2]))
+            for i, b in enumerate(b_keys)
+        }
