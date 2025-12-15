@@ -10,6 +10,11 @@ from scipy.sparse.linalg import splu
 from .glazer_pattern import build_octahedra_rotmat
 from pync import Core, NanoCrystal
 
+"""
+Some features have beem adapted from Terumasa Tadano's codes and modified.   
+Please refer to DistortPerovskite: https://github.com/ttadano/DistortPerovskite/tree/main
+"""
+
 
 def _build_X_to_B(octahedra: Dict[int, dict]) -> Dict[int, list[int]]:
     X_to_B = defaultdict(list)
