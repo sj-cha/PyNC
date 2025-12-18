@@ -245,6 +245,7 @@ class NanoCrystal:
         angles: Tuple[float, float, float],
         *,
         order: str = "xyz",
+        move_ligands: bool = True,
     ):
         from .tilt import apply_tilt 
         apply_tilt(
@@ -252,6 +253,7 @@ class NanoCrystal:
             glazer=glazer,
             angles=angles,
             order=order,
+            move_ligands=move_ligands,
         )
 
 

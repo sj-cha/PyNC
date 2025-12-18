@@ -111,6 +111,7 @@ def apply_tilt(
     angles: Tuple[float, float, float],
     *,
     order: str = "xyz",
+    move_ligands: bool = True,
 ):
 
     octahedra = structure.octahedra
@@ -124,7 +125,7 @@ def apply_tilt(
     lig_global_indices = {}
     lig_anchor0 = None
 
-    if isinstance(structure, NanoCrystal):
+    if isinstance(structure, NanoCrystal) and move_ligands:
         lig_anchor0 = {}
         for b in b_keys:
             for lig_id in octahedra[int(b)].get("Ligand", []):
@@ -173,7 +174,7 @@ def apply_tilt(
         pos_new[int(x)] = np.mean(preds, axis=0)
 
     # 3) Ligands: rigidly follow assigned B (row-vector update)
-    if isinstance(structure, NanoCrystal):
+    if isinstance(structure, NanoCrystal) and move_ligands:
         for lig_id, b in lig_to_b.items():
             b = int(b)
             R = R_b.get(b, np.eye(3))
@@ -195,6 +196,7 @@ def apply_tilt(
     n_core = len(structure.core.atoms)
     structure.core.atoms.positions[:] = pos_new[:n_core]
 
-    for lig_id, gidx in lig_global_indices.items():
-        lig = structure.ligands[int(lig_id)]
-        lig.atoms.positions[:] = pos_new[np.asarray(gidx, dtype=int)]
+    if move_ligands:
+        for lig_id, gidx in lig_global_indices.items():
+            lig = structure.ligands[int(lig_id)]
+            lig.atoms.positions[:] = pos_new[np.asarray(gidx, dtype=int)]
