@@ -7,6 +7,7 @@ import numpy as np
 from ase import Atoms
 from ase.io import read, write
 from scipy.spatial import cKDTree
+from pymatgen.analysis.molecule_structure_comparator import CovalentRadius
 
 import random
 
@@ -147,6 +148,35 @@ class Core:
             assert n_A * 1 + n_B * 2 - n_X * 1 == 0, "Core is not charge neutral!"
 
         return core
+
+
+    def perturb(self, 
+                bound:List[float],
+                seed: Optional[int] = None
+    ) -> None:
+
+        if seed is not None:
+            rng = np.random.default_rng(seed)
+            rand_uniform = rng.uniform
+        else:
+            rand_uniform = np.random.uniform
+
+        lo, hi = float(bound[0]), float(bound[1])
+        if lo < 0 or hi <= 0 or hi < lo:
+            raise ValueError(f"Bound must be a valid fraction, satisfying 0 <= low <= high, got {bound}")
+
+        symbols = self.atoms.get_chemical_symbols()
+        radii = np.array([CovalentRadius.radius[s] for s in symbols], dtype=float)
+        mags = rand_uniform(radii * lo, radii * hi)
+
+        dirs = rand_uniform(-1.0, 1.0, size=(len(self.atoms), 3))
+        norms = np.linalg.norm(dirs, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-12)  
+        dirs /= norms
+
+        pos = self.atoms.get_positions()
+        pos = pos + dirs * mags[:, None]
+        self.atoms.set_positions(pos)
 
 
     def apply_tilt(
