@@ -27,10 +27,17 @@ def apply_strain(
     F[2, 2] += strain[2]
 
     # Apply strain 
-    pos_new = pos0[:len(atoms)] @ F.T
+    if isinstance(structure, Core):
+        pos_new = pos0 @ F.T
+        structure.atoms.positions[:] = pos_new[: len(structure.atoms)]
+        return
+
+    n_core = len(structure.core.atoms)
+    pos_new[:n_core] = pos0[:n_core] @ F.T
+    structure.core.atoms.positions[:] = pos_new[:n_core]
 
     # Optional move_ligand
-    if isinstance(structure, NanoCrystal) and move_ligands:
+    if move_ligands:
         for lig in structure.ligands:
             anchor0 = getattr(lig, "anchor_pos", None)
             if anchor0 is None:
@@ -45,13 +52,5 @@ def apply_strain(
             global_indices = np.asarray(lig.indices, dtype=int)
             pos_new[global_indices] += delta
 
-    if isinstance(structure, Core):
-        structure.atoms.positions[:] = pos_new[: len(structure.atoms)]
-        return
-
-    n_core = len(structure.core.atoms)
-    structure.core.atoms.positions[:] = pos_new[:n_core]
-
-    if move_ligands:
         for lig in structure.ligands:
             lig.atoms.positions[:] = pos_new[lig.indices]
