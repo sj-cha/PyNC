@@ -30,6 +30,7 @@ class Slab:
     X: str
     atoms: Atoms
     a: float
+    vacuum: float
     supercell: Sequence[int] # (nx, ny, nz)                 
     indices: Optional[np.ndarray] = None
     octahedra: Dict[int, Dict[str, List[int]]] = field(default_factory=dict)
@@ -58,6 +59,7 @@ class Slab:
         X: str,
         a: float,
         supercell: Sequence[int], # (nx, ny, nz)
+        vacuum: float = 15.0,
         tol: float = 1e-5,
     ) -> Slab:
 
@@ -93,9 +95,9 @@ class Slab:
         keep = pos[:, 2] <= (z_cut + tol)
         atoms = atoms[keep]
 
-        atoms.set_cell([sx * a, sy * a, sz * a])
+        atoms.set_cell([sx * a, sy * a, sz * a + vacuum])
 
-        slab = cls(A=A, B=B, X=X, atoms=atoms, a=float(a), supercell=(sx, sy, sz))
+        slab = cls(A=A, B=B, X=X, atoms=atoms, a=float(a), supercell=(sx, sy, sz), vacuum=vacuum)
 
         return slab
 
@@ -143,11 +145,15 @@ class Slab:
     def apply_strain(self, strain: Sequence[float]):
         from .strain import apply_strain
         apply_strain(structure=self, strain=strain)
+        cell = self.atoms.get_cell()
+        cell[0] *= (1 + strain[0])
+        cell[1] *= (1 + strain[1])
+        cell[2] *= (1 + strain[2])
+        self.atoms.set_cell(cell, scale_atoms=False) 
 
 
-    def to(self, fmt: str = "vasp", filename: str = None, vacuum = 15) -> None:
+    def to(self, fmt: str = "vasp", filename: str = None) -> None:
         if fmt == 'vasp':
-            self.atoms.cell += np.array([[0,0,0],[0,0,0],[0,0,vacuum]])
             write_vasp("POSCAR", self.atoms, sort=True)
 
         if fmt == 'xyz':
@@ -226,9 +232,13 @@ class Slab:
 
 
     def _build_octahedra(self) -> None:
+        cell = self.atoms.get_cell()
+        Lx, Ly, Lz = cell.lengths() 
+
         at = self.atoms
         syms = np.array(at.get_chemical_symbols())
-        pos = at.get_positions()
+        scaled = at.get_scaled_positions(wrap=True)
+        pos = scaled @ cell.array  
 
         b_idx = np.where(syms == self.B)[0]
         x_idx = np.where(syms == self.X)[0]
@@ -236,8 +246,8 @@ class Slab:
         B_pos = pos[b_idx]
         X_pos = pos[x_idx]
 
-        tree = cKDTree(X_pos)
-        r_cut = self.a + 1e-2
+        tree = cKDTree(X_pos, boxsize=(Lx, Ly, Lz))
+        r_cut = self.a
         neigh_lists = tree.query_ball_point(B_pos, r_cut)
 
         octahedra: Dict[int, Dict[str, List[int]]] = {}

@@ -4,11 +4,11 @@ from typing import Sequence
 
 import numpy as np
 
-from pync import Core, NanoCrystal
+from pync import Core, NanoCrystal, Slab
 
 
 def apply_strain(
-    structure: Core | NanoCrystal,
+    structure: Core | Slab | NanoCrystal,
     strain: Sequence[float],          # (ex, ey, ez)
     strain_ligands: bool = True,
 ):
@@ -30,6 +30,11 @@ def apply_strain(
     if isinstance(structure, Core):
         center = np.mean(pos0, axis=0)
         pos_new = (pos0 - center) @ F.T + center
+        structure.atoms.positions[:] = pos_new[: len(structure.atoms)]
+        return
+    
+    if isinstance(structure, Slab):
+        pos_new = pos0  @ F.T 
         structure.atoms.positions[:] = pos_new[: len(structure.atoms)]
         return
 
