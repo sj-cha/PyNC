@@ -47,7 +47,7 @@ class Core:
 
     @classmethod
     # Currently only supports ABX3 perovskites with cubic structure
-    def build_core(
+    def build(
         cls,
         A,
         B,
@@ -217,34 +217,26 @@ class Core:
         write(filename, self.atoms, format=fmt, comment=formula)
 
 
-    def _get_surface_atoms(
-            self, 
-            tol: float = 1e-2
-    ) -> dict[str, np.ndarray]:
-        
-        surface_indices = {}
+    def _get_surface_atoms(self, tol: float = 1e-2) -> dict[str, np.ndarray]:
+        surface_indices: dict[str, np.ndarray] = {}
+
+        positions = np.asarray(self.atoms.get_positions(), dtype=float)  # (N,3)
+        symbols = np.array(self.atoms.get_chemical_symbols())
 
         for element in [self.A, self.X]:
-            # mask & positions for this element
-            atoms = [i for i in self.atoms if i.symbol == element] 
-            positions = np.array([atom.position for atom in atoms])
+            elem_global = np.where(symbols == element)[0]
+            elem_pos = positions[elem_global]           # (Ne,3)
+            mins = elem_pos.min(axis=0)
+            maxs = elem_pos.max(axis=0)
 
-            # element-wise min/max along x,y,z
-            mins = positions.min(axis=0)
-            maxs = positions.max(axis=0)
+            on_min = np.isclose(elem_pos, mins, atol=tol)
+            on_max = np.isclose(elem_pos, maxs, atol=tol)
 
-            # for each atom of this element, check if it's on any boundary plane
-            surface_flags = []
-            for p in positions:
-                on_min = np.isclose(p, mins, atol=tol)
-                on_max = np.isclose(p, maxs, atol=tol)
-                # surface if on min or max in at least one direction
-                surface_flags.append(np.any(on_min | on_max))
-
-            surface_flags = np.array(surface_flags, dtype=bool)
-            surface_indices[element] = np.where(surface_flags)[0]
+            surface_flags = np.any(on_min | on_max, axis=1)
+            surface_indices[element] = elem_global[surface_flags].astype(int)
 
         return surface_indices
+
 
 
     def _build_binding_sites(self) -> None:
@@ -255,27 +247,24 @@ class Core:
         tol = 1e-3
         plane_indices = defaultdict(lambda: defaultdict(list))
 
-        for elem, local_idxs in surface.items():
-            # Global indices for this element
+        for elem, idxs in surface.items():
             elem_global = np.where(symbols == elem)[0]
             elem_pos    = positions[elem_global]
             mins, maxs  = elem_pos.min(0), elem_pos.max(0)
 
-            for li in local_idxs:
-                gi = elem_global[li]
-                p  = positions[gi]
+            for i in idxs:
+                p = positions[i]
 
                 is_max = np.isclose(p, maxs, atol=tol)
                 is_min = np.isclose(p, mins, atol=tol)
 
-                # +1 for max plane, -1 for min plane, 0 otherwise
                 v = tuple(int(x) for x in (is_max.astype(int) - is_min.astype(int)))
                 nz = np.count_nonzero(v)
 
                 if nz == 0:
-                    continue 
+                    continue
 
-                plane_indices[v][elem].append(int(gi))
+                plane_indices[v][elem].append(int(i))
 
         plane_atoms = {hkl: {elem: idxs for elem, idxs in elems.items()} for hkl, elems in plane_indices.items()}
         self.plane_atoms = plane_atoms
