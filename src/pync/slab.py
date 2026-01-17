@@ -633,11 +633,17 @@ class Slab:
         b_idx = np.where(syms == self.core.B)[0]
         x_idx = np.where(syms == self.core.X)[0]
 
+        cell = at.get_cell()
+        Lx, Ly, Lz = cell.lengths()
+
+        scaled = at.get_scaled_positions(wrap=True)
+        pos = scaled @ cell.array
+
         B_pos = pos[b_idx]
         X_pos = pos[x_idx]
 
-        x_tree = cKDTree(X_pos)
-        r_cut = self.core.a + 1e-2
+        x_tree = cKDTree(X_pos, boxsize=(Lx, Ly, Lz))
+        r_cut = float(self.core.a) + 1e-2
         neigh_lists = x_tree.query_ball_point(B_pos, r_cut)
 
         octahedra: Dict[int, Dict[str, List[int]]] = {}
@@ -662,7 +668,7 @@ class Slab:
         if anchor_positions:
             anchor_positions = np.vstack(anchor_positions)
 
-            b_tree = cKDTree(B_pos)
+            b_tree = cKDTree(B_pos, boxsize=(Lx, Ly, Lz))
             _, b_loc = b_tree.query(anchor_positions, k=1)
 
             for j, b_loc_j in enumerate(b_loc):
