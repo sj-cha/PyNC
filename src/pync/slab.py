@@ -793,6 +793,7 @@ class Slab:
             "ligand_types": ligand_types_meta,
             "core_indices": core_indices_meta,
             "ligands": ligands_meta,
+            "vasp_sort_idx": np.argsort(self.atoms.symbols).tolist()
         }
 
         with open(json_path, "w") as f:
@@ -806,6 +807,9 @@ class Slab:
 
         with open(json_path) as f:
             topo = json.load(f)
+
+        vasp_sort_idx = topo.get("vasp_sort_idx", None)
+        atoms = atoms[np.argsort(vasp_sort_idx)]
 
         schema_version = topo.get("schema_version", 1)
         if schema_version != 1:
