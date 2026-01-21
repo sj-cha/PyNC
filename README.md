@@ -1,4 +1,4 @@
-# PyNC: A Framework for Generating and Analyzing Ligand-passivated Perovskite Nanocrystals
+# PerovKit: A Framework for Generating and Analyzing Ligand-passivated Perovskite Nanocrystals
 
 Under active development by Seungjun Cha 
 
