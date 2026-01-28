@@ -45,15 +45,15 @@ class Ligand:
     @classmethod
     def from_xyz(
         cls,
-        xyz_path: str,
+        file_path: str,
         binding_motif: BindingMotif,
         name: str,
         charge: Optional[int] = None,     
         **kwargs
     ) -> Ligand:
         
-        atoms = read(xyz_path)
-        mol = Chem.MolFromXYZFile(rf"{xyz_path}")
+        atoms = read(file_path)
+        mol = Chem.MolFromXYZFile(rf"{file_path}")
 
         if charge is None:
             candidate_charges = (-1, 0, 1)
