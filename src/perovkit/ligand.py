@@ -34,7 +34,7 @@ class Ligand:
     anchor_pos: Optional[np.ndarray] = None
     plane: Optional[Plane] = None
     indices: Optional[np.ndarray] = None
-    _neighbor_cutoff: float = 2.0
+    _neighbor_cutoff: float = 1.2
     _anchor_offset: float = 0.0
 
     def __post_init__(self):
