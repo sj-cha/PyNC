@@ -99,6 +99,9 @@ class Slab:
             available = [s for s in pool if not s.passivated]
             
             if spec.binding_sites is not None:
+                if len(spec.binding_sites) == 0:
+                    print(f"[Warning] Empty list provided for ligand {lig.name}. Skipping placement.")
+                    continue
                 chosen_sites = []
                 for idx in spec.binding_sites:
                     site = next((s for s in available if s.index == idx), None)
